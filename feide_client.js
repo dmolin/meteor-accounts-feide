@@ -6,7 +6,6 @@ import _ from "lodash";
 
 import { OAuth } from "meteor/oauth";
 
-console.log("====================================== CLIENT LOADING!");
 Feide = {};
 
 // Request OpenID Connect credentials for the user
