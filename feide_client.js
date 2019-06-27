@@ -28,14 +28,14 @@ Feide.requestCredential = function (options, credentialRequestCompleteCallback) 
   }
 
   var credentialToken = Random.secret();
-  var loginStyle = OAuth._loginStyle(serviceName, config, options);
-  var scope = config.requestPermissions || ['openid', 'profile', 'email', 'groups', 'userinfo', 'userinfo-extra'];
+  var loginStyle = OAuth._loginStyle('feide', config, options);
+  var scope = config.requestPermissions || ['openid', 'profile', 'email', 'groups', 'userinfo'];
 
   // options
   options = options || {};
   options.client_id = config.clientId;
   options.response_type = options.response_type || 'code';
-  options.redirect_uri = OAuth._redirectUri(serviceName, config);
+  options.redirect_uri = OAuth._redirectUri('feide', config);
   options.state = OAuth._stateParam(loginStyle, credentialToken, options.redirectUrl);
   options.scope = scope.join(' ');
 
@@ -64,7 +64,7 @@ Feide.requestCredential = function (options, credentialRequestCompleteCallback) 
   };
 
   OAuth.launchLogin({
-    loginService: serviceName,
+    loginService: 'feide',
     loginStyle: loginStyle,
     loginUrl: loginUrl,
     credentialRequestCompleteCallback: credentialRequestCompleteCallback,

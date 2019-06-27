@@ -5,59 +5,31 @@ if (!Meteor.isServer) return;
 
 import { OAuth } from "meteor/oauth";
 
-var userAgent = "Meteor";
+let userAgent = "Meteor";
 if (Meteor.release) {
   userAgent += "/" + Meteor.release;
 }
 
 Meteor.startup(() => {
-  if (!Meteor.settings.public.feide || !Meteor.settings.private.feide) {
+  if (!Meteor.settings.private.feide) {
     console.warn("FEIDE Service Configuration is disabled (no config)");
     return;
   }
+
+  var feide = Meteor.settings.private.feide;
 
   ServiceConfiguration.configurations.upsert(
     { service: 'feide' },
     {
       $set: {
         loginStyle: "popup",
-        clientId: _.get(Meteor.settings.public, "feide.clientId"),
-        secret: _.get(Meteor.settings.private, "feide.secret")
+        ...feide
       }
     }
   );
 });
 
-const getUserInfo = function (accessToken) {
-  var debug = process.env.DEBUG || false;
-  var config = getConfiguration();
-  // Some userinfo endpoints use a different base URL than the authorization or token endpoints.
-  // This logic allows the end user to override the setting by providing the full URL to userinfo in their config.
-  if (config.userinfoEndpoint.includes("https://")) {
-    var serverUserinfoEndpoint = config.userinfoEndpoint;
-  } else {
-    var serverUserinfoEndpoint = config.serverUrl + config.userinfoEndpoint;
-  }
-  var response;
-  try {
-    response = HTTP.get(
-      serverUserinfoEndpoint,
-      {
-        headers: {
-          "User-Agent": userAgent,
-          "Authorization": "Bearer " + accessToken
-        }
-      }
-    );
-  } catch (err) {
-    throw _.extend(new Error("Failed to fetch userinfo from OIDC " + serverUserinfoEndpoint + ": " + err.message),
-      { response: err.response });
-  }
-  if (debug) console.log('XXX: getUserInfo response: ', response.data);
-  return response.data;
-};
-
-var getConfiguration = function () {
+const getConfiguration = function () {
   var config = ServiceConfiguration.configurations.findOne({ service: 'feide' });
   if (!config) {
     throw new ServiceConfiguration.ConfigError('Service oidc not configured.');
@@ -65,26 +37,13 @@ var getConfiguration = function () {
   return config;
 };
 
-const getTokenContent = function (token) {
-  var content = null;
-  if (token) {
-    try {
-      var parts = token.split('.');
-      var header = JSON.parse(new Buffer(parts[0], 'base64').toString());
-      content = JSON.parse(new Buffer(parts[1], 'base64').toString());
-      var signature = new Buffer(parts[2], 'base64');
-      var signed = parts[0] + '.' + parts[1];
-    } catch (err) {
-      this.content = {
-        exp: 0
-      };
-    }
-  }
-  return content;
-};
+const getEndpoint = (url, config) => {
+  return url.includes("https://") ?
+    url :
+    config.serverUrl + url;
+}
 
-
-var getToken = function (query) {
+const getToken = function (query) {
   var debug = process.env.DEBUG || false;
   var config = getConfiguration();
   var serverTokenEndpoint = config.serverUrl + config.tokenEndpoint;
@@ -121,6 +80,56 @@ var getToken = function (query) {
   }
 };
 
+const getUserInfo = function (accessToken) {
+  var debug = process.env.DEBUG || false;
+  var config = getConfiguration();
+
+  if (!_.get(config, "userinfoEndpoint")) return;
+
+  const serverUserinfoEndpoint = getEndpoint(config.userinfoEndpoint, config);
+  var response;
+  try {
+    response = HTTP.get(
+      serverUserinfoEndpoint,
+      {
+        headers: {
+          "User-Agent": userAgent,
+          "Authorization": "Bearer " + accessToken
+        }
+      }
+    );
+  } catch (err) {
+    throw _.extend(new Error("Failed to fetch userinfo from OIDC " + serverUserinfoEndpoint + ": " + err.message),
+      { response: err.response });
+  }
+  if (debug) console.log('XXX: getUserInfo response: ', response.data);
+  return response.data;
+};
+
+const getGroups = function (accessToken) {
+  var debug = process.env.DEBUG || false;
+  var config = getConfiguration();
+
+  const groupsEndpoint = getEndpoint(config.groupsEndpoint, config);
+  let response;
+  try {
+    response = HTTP.get(
+      groupsEndpoint,
+      {
+        headers: {
+          "User-Agent": userAgent,
+          "Authorization": "Bearer " + accessToken
+        }
+      }
+    );
+  } catch (err) {
+    throw _.extend(new Error("Failed to fetch identity from Dataporten. " + err.message),
+      { response: err.response });
+  }
+  if (debug) console.log('XXX: getGroups response: ', response.data);
+  return response.data;
+};
+
 OAuth.registerService('feide', 2, null, function (query) {
   var debug = process.env.DEBUG || false;
   var token = getToken(query);
@@ -130,35 +139,42 @@ OAuth.registerService('feide', 2, null, function (query) {
   var expiresAt = (+new Date) + (1000 * parseInt(token.expires_in, 10));
 
   var userinfo = getUserInfo(accessToken);
+  var groups = getGroups(accessToken);
+
   if (debug) console.log('XXX: userinfo:', userinfo);
 
-  var serviceData = {};
-  serviceData.id = userinfo[process.env.OAUTH2_ID_MAP] || userinfo[id];
-  serviceData.username = userinfo[process.env.OAUTH2_USERNAME_MAP] || userinfo[uid];
-  serviceData.fullname = userinfo[process.env.OAUTH2_FULLNAME_MAP] || userinfo[displayName];
-  serviceData.accessToken = accessToken;
-  serviceData.expiresAt = expiresAt;
-  serviceData.email = userinfo[process.env.OAUTH2_EMAIL_MAP] || userinfo[email];
+  var serviceData = {
+    id: userinfo.user.userid,
+    accessToken: OAuth.sealSecret(accessToken),
+    expiresAt,
+    email: userinfo.user.email,
+    groups: groups,
+    userid_sec: userinfo.user.userid_sec[0],
+    profilepicture: userinfo.user.profilephoto,
+  };
 
-  if (accessToken) {
-    var tokenContent = getTokenContent(accessToken);
-    var fields = _.pick(tokenContent, getConfiguration().idTokenWhitelistFields);
-    _.extend(serviceData, fields);
+  // serviceData.expiresAt = expiresAt;
+
+  if (token.refresh_token) {
+    serviceData.refreshToken = token.refresh_token;
   }
 
-  if (token.refresh_token)
-    serviceData.refreshToken = token.refresh_token;
   if (debug) console.log('XXX: serviceData:', serviceData);
 
-  var profile = {};
-  profile.name = userinfo[process.env.OAUTH2_FULLNAME_MAP] || userinfo[displayName];
-  profile.email = userinfo[process.env.OAUTH2_EMAIL_MAP] || userinfo[email];
+  const profile = {
+    username: userinfo.user.userid,
+    name: userinfo.user.name,
+    email: userinfo.user.email
+  };
+
   if (debug) console.log('XXX: profile:', profile);
 
-  return {
+  var result = {
     serviceData: serviceData,
     options: { profile: profile }
   };
+
+  return result;
 });
 
 Feide = {
